@@ -34,17 +34,26 @@ function registerTable() {
 }
 
 function workflow(data) {
-  const {entry, batch, retest} = data;
+  const {entry, batch, retest, active_claim, queue_basis} = data;
   const role = store.user.role;
+  const staff = role !== 'viewer';
   const eligibility = {
     queued: '等候计量 worker 接单。', running: '正在对已冻结的输入拟合参考批次。',
-    failed: '计算失败，可按原始快照重试。', awaiting_verification: '预测处于工艺窗。签发前需要另一枚试片的复测。',
-    retest_required: '预测超出工艺窗。完成独立试片复测后留置本次校准，重新采集周期再试算。',
+    failed: '计算失败，可按原始快照重试。', awaiting_verification: '预测处于工艺窗。签发前需要领取复测工位，再用另一枚试片复测。',
+    retest_required: '预测超出工艺窗。领取复测工位完成独立试片复测后留置本次校准，重新采集周期再试算。',
     verified: '试片复测处于工艺窗，等候主管签发。', held: '本次校准已留置。创建新的设备周期并重新测量。',
     released: '主管签发完成，冻干批次已放行。',
   };
+  const needsStation = ['awaiting_verification', 'retest_required'].includes(entry.state);
   return `<section class="sheet workflow">${sectionTitle('复测与签发')}
     <div class="padded"><p class="callout ${['held','retest_required','failed'].includes(entry.state) ? 'warning' : ''}">${h(eligibility[entry.state])}</p>
+    ${queue_basis && needsStation ? `<dl class="ledger-meta">
+      <div><dt>最近窗边距离</dt><dd class="mono">${number(queue_basis.nearest_edge_margin, 3)} pp</dd></div>
+      <div><dt>留一误差 RMSE</dt><dd class="mono">${number(queue_basis.loo_rmse, 3)} pp</dd></div>
+      <div><dt>排队依据</dt><dd class="mono"><b>${number(queue_basis.queue_key, 3)} pp</b>（越小越靠前）</dd></div></dl>` : ''}
+    ${needsStation && !active_claim ? `<p class="callout warning">该单在复测工位队列中，尚未领单，读数不能入账。</p>
+      ${staff ? '<a class="primary button-link" href="#stations">前往复测工位领单 →</a>' : ''}` : ''}
+    ${active_claim ? `<p class="callout">已由 <b>${h(active_claim.claimed_by)}</b> 领取 <b>${h(active_claim.station_name)}</b>（第 ${active_claim.attempts} 次），工位占用至复测入账或交班退回。</p>` : ''}
     ${retest.length ? `<dl class="ledger-meta"><div><dt>复测试片</dt><dd class="mono">${h(retest[0].specimen)}</dd></div>
       ${retest.map(sample => `<div><dt>${h(stages[sample.stage])}厚度</dt><dd class="mono">${number(sample.thickness_mm, 3)} mm</dd></div>`).join('')}
       <div><dt>复测记录</dt><dd>${h(entry.recheck_note)}</dd></div></dl>` : ''}
@@ -54,12 +63,13 @@ function workflow(data) {
     ${entry.state === 'failed' && role !== 'viewer' ? '<button class="primary" data-action="retry">按原输入重试</button>' : ''}
     ${['queued','running'].includes(entry.state) ? '<button class="text-button" data-action="refresh">刷新计算状态</button>' : ''}
     ${entry.state === 'held' ? `<a class="text-link" href="#batches/${h(batch.code)}">返回批次曲线 →</a>` : ''}
-    ${['awaiting_verification','retest_required'].includes(entry.state) && role === 'operator' ? `<form class="retest-form" data-action="retest">
-      <label class="wide">独立试片编号<input name="specimen" placeholder="TRAY-R1" required></label>
-      <label>冻干前 mm<input name="before_mm" type="number" min="0.00001" max="200" step="0.00001" required></label>
-      <label>冻干后 mm<input name="after_mm" type="number" min="0.00001" max="200" step="0.00001" required></label>
-      <label class="wide">复测说明<textarea name="note" rows="2" minlength="4" required></textarea></label>
-      <button class="primary">登记复测</button></form>` : ''}
+    ${needsStation && active_claim && role === 'operator' ? `<form class="retest-form" data-action="retest" data-claim="${active_claim.id}" data-release="${entry.id}">
+      <label class="wide">独立试片编号<input name="specimen" placeholder="TRAY-R1" value="${h(active_claim.draft?.specimen || '')}" required></label>
+      <label>冻干前 mm<input name="before_mm" type="number" min="0.00001" max="200" step="0.00001" value="${active_claim.draft?.before_mm ?? ''}" required></label>
+      <label>冻干后 mm<input name="after_mm" type="number" min="0.00001" max="200" step="0.00001" value="${active_claim.draft?.after_mm ?? ''}" required></label>
+      <label class="wide">复测说明<textarea name="note" rows="2" minlength="4" required>${h(active_claim.draft?.note || '')}</textarea></label>
+      <button type="button" class="text-button" data-action="draft" data-claim="${active_claim.id}">先存草稿</button>
+      <button class="primary">登记复测并腾工位</button></form>` : ''}
     ${entry.state === 'verified' && role === 'supervisor' ? `<form data-action="release"><label class="wide">签发意见<textarea name="note" rows="2" minlength="4" required></textarea></label>
       <button class="primary">签发批次放行</button></form>` : ''}</div></section>`;
 }

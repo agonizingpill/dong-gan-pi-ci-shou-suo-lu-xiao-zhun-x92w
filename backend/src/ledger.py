@@ -227,25 +227,6 @@ def inside(value, window):
     return window[0] <= value <= window[1]
 
 
-def measure_retest(db, batch, run, release, payload, actor):
-    if release.state not in (ReleaseState.AWAITING, ReleaseState.RETEST):
-        blocked(db, actor, 'retest.record', '当前校准状态不接受复测', batch.code)
-    if any(item.specimen == payload.specimen for item in samples_for(db, run.id)):
-        blocked(db, actor, 'retest.record', '复测须取独立试片，试片编号不能与首测重复', batch.code)
-    db.add_all([
-        ShrinkageSample(run_id=run.id, technician=actor, specimen=payload.specimen, stage=stage,
-                        thickness_mm=reading, is_retest=True)
-        for stage, reading in [(Stage.PRE, payload.before_mm), (Stage.POST, payload.after_mm)]
-    ])
-    release.recheck_pct = round(100 * (1 - payload.after_mm / payload.before_mm), 6)
-    release.recheck_note = payload.note
-    acceptable = release.state == ReleaseState.AWAITING and inside(release.recheck_pct, release.snapshot['window'])
-    release.state = ReleaseState.VERIFIED if acceptable else ReleaseState.HELD
-    release.touched_at = utcnow()
-    action = 'retest.verified' if acceptable else 'retest.held'
-    record(db, actor, action, f'{payload.specimen} · {release.recheck_pct:.2f}% · {payload.note}', batch.code)
-
-
 def sign_release(db, batch, run, release, actor, note):
     if release.state != ReleaseState.VERIFIED or run.state != RunState.FROZEN or latest_run(db, batch.code).id != run.id:
         blocked(db, actor, 'release.sign', '仅窗内且已复测确认的当前冻结曲线允许签发', batch.code)

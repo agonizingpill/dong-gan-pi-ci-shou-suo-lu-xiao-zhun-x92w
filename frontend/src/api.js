@@ -1,6 +1,6 @@
 export const store = {
   token: sessionStorage.getItem('freeze-lab-token'), user: null, batches: [], recipes: [],
-  batch: null, calibration: null, register: [],
+  batch: null, calibration: null, register: [], board: null,
 };
 
 export function setToken(token) {
@@ -42,6 +42,10 @@ export const api = {
   retry: id => request(`${fitPath(id)}/retry`, 'POST'),
   retest: (id, data) => request(`${fitPath(id)}/retest`, 'POST', data),
   release: (id, data) => request(`${fitPath(id)}/release`, 'POST', data),
+  board: () => request('/retest-board'),
+  claim: id => request(`${fitPath(id)}/claim`, 'POST'),
+  draft: (claimId, data) => request(`/claims/${encodeURIComponent(claimId)}/draft`, 'PUT', data),
+  returnClaim: (claimId, data) => request(`/claims/${encodeURIComponent(claimId)}/return`, 'POST', data),
 };
 
 export async function loadInventory() {

@@ -8,9 +8,9 @@
 
 | 角色 | 主要页面 | 权限和典型动作 |
 |---|---|---|
-| `operator` 实验员 | 批次与曲线、收缩率试算、放行详情 | 登记冻干批次，导入并冻结曲线，配对厚度，提交试算，登记独立试片复测 |
-| `supervisor` 签发主管 | 批次与曲线、收缩率试算、放行详情 | 建新配方版本，认证历史标定参考，提交试算或重试，签发已复测确认的批次 |
-| `viewer` 只读观察员 | 全部业务页 | 查阅批次、配方、曲线、测量、拟合证据和签发台账 |
+| `operator` 实验员 | 批次与曲线、收缩率试算、复测工位、放行详情 | 登记冻干批次，导入并冻结曲线，配对厚度，提交试算，领取复测工位，登记独立试片复测 |
+| `supervisor` 签发主管 | 批次与曲线、收缩率试算、复测工位、放行详情 | 建新配方版本，认证历史标定参考，提交试算或重试，领单/交班退回，签发已复测确认的批次 |
+| `viewer` 只读观察员 | 全部业务页 | 查阅批次、配方、曲线、测量、拟合证据、工位占用和签发台账 |
 
 三个账号的用户名就是角色，演示密码均为 `Lab-demo-1062`。
 
@@ -68,11 +68,22 @@ docker compose down -v --remove-orphans
 - 窗内预测仍需独立试片复测。预测超窗或复测超窗都会将这次校准留置。复测达窗且预测达窗时主管可签发。物理证据不足返回 HTTP 409 并记操作者、拒绝原因和时间。
 - Redis 唤醒队列以已提交的 MySQL 校准记录为准，短暂滞留会由 worker 扫描回收。错误单可用原快照重试。数据库批次行锁串行化曲线、测量、复测和签发写入。
 
-`backend/src/models.py` 与 `backend/migrations/initial.py` 定义初始数据库。`schemas.py` 是入参协议，`ledger.py` 是领域状态和工况提取，`routes.py` 暴露读写接口。`calculation.py` 与 `worker.py` 分离计算和队列提交。`frontend/src/api.js` 管理 API 和会话状态，`pages/` 实现四个页面，`components/` 保存共用状态标示、工艺窗和曲线。
+## 复测工位与排队
+
+实验室固定两个复测工位（`retest_stations` 固定 1、2 号，迁移自动补齐），出分后待复测的校准单进入共享队列，规则在 `src/retest.py`：
+
+- **排队依据**：`min(|预测 − 窗下限|, |预测 − 窗上限|) − 留一误差 LOO RMSE`，按该值从小到大排队，并列时按出分时间、校准单号。预测或留一误差变化后队列实时重排，新出分单可直接插到队首。
+- **领单**：只有队列头名可领，一单只占一个工位、每个工位同时只接一单；批次行锁、工位行锁与 `retest_claims` 的唯一槽位约束共同保证两班同时领单不会超占。
+- **领单重试不新增占用**：对已持活跃领单的校准单再次领单，返回原领单并累加 `attempts`，工位与占用行数不变。
+- **草稿与入账**：工位上可先存复测草稿（仅 JSON 留痕，不生成 `shrinkage_samples` 行）；读数入账必须持有活跃领单，入账时才写入两条独立试片测量并把工位腾出。
+- **交班退回**：未测单可退回队列，工位立即释放；旧领单标记 `returned`、草稿清空且永远不能入账，退回单按当前依据重新排队，可被重新领取。
+- 复测页面（导航「复测工位」）展示两个工位的实时占用、每单的最近窗边距离 / 留一误差 / 排队依据明细、领单重试次数和近期领单留痕。
+
+`backend/src/models.py` 与 `backend/migrations/initial.py` 定义初始数据库（迁移对旧库幂等补列、补表并补齐两个工位）。`schemas.py` 是入参协议，`ledger.py` 是领域状态和工况提取，`retest.py` 是复测工位排队、领单、草稿、入账与交班退回，`routes.py` 暴露读写接口。`calculation.py` 与 `worker.py` 分离计算和队列提交。`frontend/src/api.js` 管理 API 和会话状态，`pages/` 实现五个页面（含 `stations.js` 复测工位），`components/` 保存共用状态标示、工艺窗和曲线。
 
 前端改动可通过 `docker compose up -d --build frontend` 重建。后端本地开发可装 `backend/requirements.txt`，设置 `DB_HOST`、`DB_PORT`、`REDIS_URL` 和数据库凭据，再从 `backend/` 运行 `python -m migrations.initial`、`python -m scripts.seed_demo`、`uvicorn src.app:app --reload`。直接运行 worker 时需提供可写的 `/evidence`，完整联调可用 Compose。
 
-共享枚举的后端定义均在 `backend/src/models.py`。`Role` 出现在 `auth.py`、`routes.py`、seed 与前端 `presentation.js`、`components/ledger.js`、`pages/` 的动作分支。`Stage` 出现在 `schemas.py`、`ledger.py`、seed 和前端 `presentation.js`、`pages/batches.js`、`pages/calibration.js`。`Phase` 出现在 `schemas.py`、`ledger.py`、seed 和前端 `presentation.js`、`components/curve.js`、`pages/batches.js`。`BatchState`、`RunState`、`ReleaseState` 由后端 `ledger.py`、`worker.py`、seed 写入，前端 `presentation.js`、`components/ledger.js` 和各业务页读取。
+共享枚举的后端定义均在 `backend/src/models.py`。`Role` 出现在 `auth.py`、`routes.py`、seed 与前端 `presentation.js`、`components/ledger.js`、`pages/` 的动作分支。`Stage` 出现在 `schemas.py`、`ledger.py`、seed 和前端 `presentation.js`、`pages/batches.js`、`pages/calibration.js`。`Phase` 出现在 `schemas.py`、`ledger.py`、seed 和前端 `presentation.js`、`components/curve.js`、`pages/batches.js`。`BatchState`、`RunState`、`ReleaseState` 由后端 `ledger.py`、`worker.py`、seed 写入，前端 `presentation.js`、`components/ledger.js` 和各业务页读取。`ClaimStatus`（`active` / `completed` / `returned`）与工位占用由 `retest.py` 维护，`pages/stations.js` 和放行详情读取。
 
 授权方式沿用所属工作区的许可约定。
 

@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import ledger
+from . import ledger, retest
 from .auth import identity, issue, require, valid_password
 from .db import session
 from .models import CalibrationRelease, ChamberRun, DryBatch, LabEvent, RecipeLot, Role, User
@@ -166,8 +166,11 @@ def register(db: Session = Depends(session)):
 def detail(entry_id: int, db: Session = Depends(session)):
     batch, run, entry = calibration_context(db, entry_id)
     events = db.scalars(select(LabEvent).filter_by(batch_code=batch.code).order_by(LabEvent.id.desc()).limit(30))
+    claim = retest.active_claim_for(db, entry_id)
     return {'batch': ledger.row(batch), 'curve': ledger.row(run), 'entry': ledger.row(entry),
             'retest': [ledger.row(sample) for sample in ledger.samples_for(db, run.id, retest=True)],
+            'queue_basis': retest.basis_breakdown(entry) if entry.prediction_pct is not None else None,
+            'active_claim': retest.claim_payload(db, claim) if claim else None,
             'events': [ledger.row(event) for event in events]}
 
 
@@ -180,12 +183,60 @@ def retry(entry_id: int, db: Session = Depends(session), user=Depends(lab_staff)
     return ledger.row(entry)
 
 
-@router.post('/calibrations/{entry_id}/retest')
-def retest(entry_id: int, payload: RetestIn, db: Session = Depends(session), user=Depends(operator)):
-    batch, run, entry = calibration_context(db, entry_id, lock=True)
-    ledger.measure_retest(db, batch, run, entry, payload, user.username)
+@router.get('/retest-board', dependencies=[Depends(identity)])
+def retest_board(db: Session = Depends(session)):
+    return retest.board(db)
+
+
+def release_batch_code(db, entry_id):
+    entry = db.get(CalibrationRelease, entry_id)
+    if entry is None:
+        raise HTTPException(404, '没有找到该校准单')
+    return db.get(ChamberRun, entry.run_id).batch_code
+
+
+def lock_claim_batch(db, claim_id):
+    claim = db.get(retest.RetestClaim, claim_id)
+    if claim is None:
+        raise HTTPException(404, '没有找到该领单')
+    entry = db.get(CalibrationRelease, claim.release_id)
+    code = db.get(ChamberRun, entry.run_id).batch_code
+    return ledger.locked_batch(db, code), claim
+
+
+@router.post('/calibrations/{entry_id}/claim')
+def claim(entry_id: int, db: Session = Depends(session), user=Depends(lab_staff)):
+    ledger.locked_batch(db, release_batch_code(db, entry_id))
+    claim, reused = retest.claim_station(db, entry_id, user.username)
     db.commit()
-    return ledger.row(entry)
+    return {'claim': retest.claim_payload(db, claim), 'reused': reused}
+
+
+@router.put('/claims/{claim_id}/draft')
+def save_draft(claim_id: int, payload: RetestIn, db: Session = Depends(session), user=Depends(lab_staff)):
+    _, claim = lock_claim_batch(db, claim_id)
+    db.refresh(claim, with_for_update=True)
+    retest.save_draft(db, claim, payload, user.username)
+    db.commit()
+    return retest.claim_payload(db, claim)
+
+
+@router.post('/claims/{claim_id}/return')
+def return_claim(claim_id: int, payload: DecisionIn, db: Session = Depends(session), user=Depends(lab_staff)):
+    _, claim = lock_claim_batch(db, claim_id)
+    db.refresh(claim, with_for_update=True)
+    retest.return_claim(db, claim, user.username, payload.note)
+    db.commit()
+    return retest.claim_payload(db, claim)
+
+
+@router.post('/calibrations/{entry_id}/retest')
+def record_retest(entry_id: int, payload: RetestIn, db: Session = Depends(session), user=Depends(operator)):
+    batch, _, entry = calibration_context(db, entry_id, lock=True)
+    claim = retest.get_active_claim(db, entry_id, user.username)
+    entry, claim = retest.book_retest(db, claim, payload, user.username)
+    db.commit()
+    return {'entry': ledger.row(entry), 'claim': retest.claim_payload(db, claim)}
 
 
 @router.post('/calibrations/{entry_id}/release')

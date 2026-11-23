@@ -4,6 +4,7 @@ import {shell} from './components/ledger.js';
 import {batchesPage} from './pages/batches.js';
 import {labPage, releasePage} from './pages/calibration.js';
 import {loginPage} from './pages/login.js';
+import {stationsPage} from './pages/stations.js';
 import {h, readCurveCSV} from './presentation.js';
 
 const root = document.getElementById('app');
@@ -40,13 +41,16 @@ async function draw() {
     return;
   }
   const [fragment, id] = location.hash.slice(1).split('/');
-  const current = ['batches', 'lab', 'release'].includes(fragment) ? fragment : 'batches';
+  const current = ['batches', 'lab', 'release', 'stations'].includes(fragment) ? fragment : 'batches';
   try {
     if (current === 'release') {
       const [register, entry] = await Promise.all([api.register(), id ? api.calibration(id) : null]);
       if (index !== renderIndex) return;
       store.register = register;
       store.calibration = entry;
+    } else if (current === 'stations') {
+      store.board = await api.board();
+      if (index !== renderIndex) return;
     } else {
       await loadInventory();
       const selected = id || store.batch?.batch.code || store.batches.find(batch => batch.code === 'FD-1121A')?.code || store.batches[0]?.code;
@@ -54,7 +58,7 @@ async function draw() {
       if (index !== renderIndex) return;
       store.batch = detail;
     }
-    const pages = {batches: batchesPage, lab: labPage, release: releasePage};
+    const pages = {batches: batchesPage, lab: labPage, release: releasePage, stations: stationsPage};
     show(shell(current, store.user, pages[current]()));
     const canvas = document.getElementById('chamber-chart');
     if (canvas) stopChart = chart(canvas, store.batch.runs[0].points);
@@ -126,22 +130,39 @@ const commands = {
     await draw();
     toast('已重新排队');
   },
-  retest: async data => {
-    await api.retest(store.calibration.entry.id, data);
+  retest: async (data, ctx) => {
+    await api.retest(ctx.release, data);
     await draw();
-    toast('独立试片复测已登记');
+    toast('独立试片复测已入账，工位已腾退');
   },
   release: async data => {
     await api.release(store.calibration.entry.id, data);
     await draw();
     toast('批次放行已签发');
   },
+  claim: async (_data, ctx) => {
+    const result = await api.claim(ctx.release);
+    await draw();
+    toast(result.reused ? '该单已在工位上，重试不新增占用' : `已领取 ${result.claim.station_name}`);
+  },
+  draft: async (_data, ctx, button) => {
+    const form = button.closest('form');
+    const payload = Object.fromEntries(new FormData(form));
+    await api.draft(ctx.claim, payload);
+    await draw();
+    toast('复测草稿已保存，尚未入账');
+  },
+  returnClaim: async (data, ctx) => {
+    await api.returnClaim(ctx.claim, data);
+    await draw();
+    toast('未测单已退回队列，旧草稿读数不能入账');
+  },
 };
 
-async function execute(action, payload, button) {
+async function execute(action, payload, button, ctx = {}) {
   if (button) button.disabled = true;
   try {
-    await commands[action](payload);
+    await commands[action](payload, ctx, button);
   } catch (error) {
     if (error.status === 401 && action !== 'login') logout();
     toast(error.message, true);
@@ -153,7 +174,8 @@ async function execute(action, payload, button) {
 root.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.target;
-  execute(form.dataset.action, Object.fromEntries(new FormData(form)), event.submitter);
+  const ctx = {claim: form.dataset.claim, release: form.dataset.release};
+  execute(form.dataset.action, Object.fromEntries(new FormData(form)), event.submitter, ctx);
 });
 root.addEventListener('click', event => {
   const button = event.target.closest('button');
@@ -163,7 +185,9 @@ root.addEventListener('click', event => {
     form.elements.password.value = 'Lab-demo-1062';
     form.elements.username.focus();
   }
-  if (button?.dataset.action) execute(button.dataset.action, undefined, button);
+  if (button?.dataset.action) {
+    execute(button.dataset.action, undefined, button, {claim: button.dataset.claim, release: button.dataset.release});
+  }
 });
 root.addEventListener('change', async event => {
   const target = event.target;

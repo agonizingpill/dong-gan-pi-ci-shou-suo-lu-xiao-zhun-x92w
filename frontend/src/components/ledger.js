@@ -4,7 +4,7 @@ export const brand = `<span class="brand-mark" aria-hidden="true"><i></i><i></i>
   <span>北屿果研<small>冻干计量台</small></span>`;
 
 export function shell(active, user, body) {
-  const links = [['batches', '批次与曲线'], ['lab', '收缩率试算'], ['release', '放行台账']];
+  const links = [['batches', '批次与曲线'], ['lab', '收缩率试算'], ['stations', '复测工位'], ['release', '放行台账']];
   return `<header class="top"><div class="top-inner"><a href="#batches" class="brand">${brand}</a>
     <nav aria-label="工作台">${links.map(([id, label]) => `<a href="#${id}" ${active === id ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>
     <div class="account"><span><b>${h(roles[user.role])}</b><small>${h(user.username)}</small></span>

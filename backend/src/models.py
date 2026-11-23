@@ -47,6 +47,15 @@ class ReleaseState(StrEnum):
     RELEASED = 'released'
 
 
+class ClaimStatus(StrEnum):
+    ACTIVE = 'active'
+    COMPLETED = 'completed'
+    RETURNED = 'returned'
+
+
+STATION_COUNT = 2
+
+
 def enum(values):
     return Enum(values, values_callable=lambda variants: [item.value for item in variants])
 
@@ -102,6 +111,7 @@ class ShrinkageSample(Base):
     stage: Mapped[Stage] = mapped_column(enum(Stage))
     thickness_mm: Mapped[float] = mapped_column(Double)
     is_retest: Mapped[bool] = mapped_column(Boolean, default=False)
+    claim_id: Mapped[int | None] = mapped_column(ForeignKey('retest_claims.id'), nullable=True)
     technician: Mapped[str] = mapped_column(String(32))
     recorded_at = mapped_column(DateTime(), default=utcnow)
 
@@ -124,6 +134,34 @@ class CalibrationRelease(Base):
     signed_at = mapped_column(DateTime(), nullable=True)
     touched_at = mapped_column(DateTime(), default=utcnow)
     attempts: Mapped[int] = mapped_column(default=0)
+
+
+class RetestStation(Base):
+    __tablename__ = 'retest_stations'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), unique=True)
+
+
+class RetestClaim(Base):
+    __tablename__ = 'retest_claims'
+    __table_args__ = (
+        UniqueConstraint('release_slot', name='uq_retest_claim_active_release'),
+        UniqueConstraint('station_slot', name='uq_retest_claim_active_station'),
+        CheckConstraint('attempts >= 1'),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    release_id: Mapped[int] = mapped_column(ForeignKey('calibration_releases.id'), index=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey('retest_stations.id'), index=True)
+    status: Mapped[ClaimStatus] = mapped_column(enum(ClaimStatus), default=ClaimStatus.ACTIVE, index=True)
+    claimed_by: Mapped[str] = mapped_column(String(32))
+    attempts: Mapped[int] = mapped_column(default=1)
+    draft: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at = mapped_column(DateTime(), default=utcnow)
+    claimed_at = mapped_column(DateTime(), default=utcnow)
+    finished_at = mapped_column(DateTime(), nullable=True)
+    # 活跃领单时分别等于校准单与工位主键；结案后取负值，腾出唯一约束槽位
+    release_slot: Mapped[int]
+    station_slot: Mapped[int]
 
 
 class LabEvent(Base):

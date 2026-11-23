@@ -168,3 +168,16 @@ form button { justify-self: start; }
   .login-wrap { padding: 22px 13px 28px; }.login-intro h1 { margin-block: 12px; }.login-phases { margin-top: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; } }
+.station-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 21px; align-items: start; margin-bottom: 18px; }
+.station-card.busy { border-color: oklch(72% .12 74); }
+.station-card.busy .section-title { background: var(--amber-wash); }
+.station-card.idle .section-title { background: var(--teal-wash); }
+.station-card form { margin-top: 12px; }
+.return-form { grid-template-columns: 1fr auto; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+.queue-sheet { margin-top: 15px; }
+.queue-sheet .padded { padding-block: 6px; }
+tr.queue-head { background: var(--wash); }
+tr.queue-head th, tr.queue-head td { border-bottom-color: oklch(80% .06 226); }
+@media (max-width: 767px) {
+  .station-grid { grid-template-columns: 1fr; }
+}
